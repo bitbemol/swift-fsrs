@@ -691,6 +691,150 @@ struct LifecycleTests {
     }
 }
 
+@Suite("FSRS — Rollback")
+struct RollbackTests {
+
+    // MARK: - Round-trip identity
+
+    @Test("Rollback restores a new card after first review")
+    func roundTripFromNew() {
+        let fsrs = FSRS()
+        let original = FSRS.createCard(now: refDate)
+        let result = fsrs.schedule(card: original, now: refDate, rating: .good)
+
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+
+        #expect(rolled == original)
+    }
+
+    @Test("Rollback restores card across all four ratings from new")
+    func roundTripAllRatingsFromNew() {
+        let fsrs = FSRS()
+        let original = FSRS.createCard(now: refDate)
+        let preview = fsrs.schedule(card: original, now: refDate)
+
+        for item in [preview.again, preview.hard, preview.good, preview.easy] {
+            let rolled = fsrs.rollback(card: item.card, log: item.log)
+            #expect(rolled == original, "\(item.log.rating) round-trip failed")
+        }
+    }
+
+    @Test("Rollback restores a learning card after a step")
+    func roundTripFromLearning() {
+        let fsrs = FSRS()
+        let new = FSRS.createCard(now: refDate)
+        // First Good moves new -> learning step 1.
+        let afterFirst = fsrs.schedule(card: new, now: refDate, rating: .good).card
+        #expect(afterFirst.state == .learning)
+
+        let later = afterFirst.due
+        let result = fsrs.schedule(card: afterFirst, now: later, rating: .good)
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+
+        #expect(rolled == afterFirst)
+    }
+
+    @Test("Rollback restores a Review-state card after Good")
+    func roundTripFromReviewGood() {
+        let fsrs = FSRS()
+        // Drive the card all the way to Review state.
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card  // graduates to Review
+        #expect(card.state == .review)
+        let snapshot = card
+
+        let result = fsrs.schedule(card: card, now: card.due, rating: .good)
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+
+        #expect(rolled == snapshot)
+    }
+
+    // MARK: - Lapse decrement
+
+    @Test("Rollback decrements lapses when log.state == .review and rating == .again")
+    func decrementsLapsesOnReviewAgain() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card  // -> Review
+        #expect(card.state == .review)
+        let lapsesBefore = card.lapses
+
+        let result = fsrs.schedule(card: card, now: card.due, rating: .again)
+        #expect(result.card.lapses == lapsesBefore + 1)
+
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+        #expect(rolled.lapses == lapsesBefore)
+        #expect(rolled == card)
+    }
+
+    @Test("Rollback does not decrement lapses on Good rating")
+    func noDecrementOnGood() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        let lapsesBefore = card.lapses
+
+        let result = fsrs.schedule(card: card, now: card.due, rating: .good)
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+        #expect(rolled.lapses == lapsesBefore)
+    }
+
+    // MARK: - Reps decrement / clamping
+
+    @Test("Rollback decrements reps but clamps at zero")
+    func repsClampedAtZero() {
+        let fsrs = FSRS()
+        let card = FSRS.createCard(now: refDate)
+        let result = fsrs.schedule(card: card, now: refDate, rating: .good)
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+
+        #expect(rolled.reps == 0)  // original was 0, now-1 clamped back to 0
+    }
+
+    // MARK: - Multiple-step rollback chain
+
+    @Test("Sequential rollback peels reviews in reverse order")
+    func sequentialRollback() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+
+        let r1 = fsrs.schedule(card: card, now: refDate, rating: .good)
+        let snapshot1 = card
+        card = r1.card
+
+        let r2 = fsrs.schedule(card: card, now: card.due, rating: .good)
+        let snapshot2 = card
+        card = r2.card
+
+        // Roll back the second review.
+        let rolledOnce = fsrs.rollback(card: card, log: r2.log)
+        #expect(rolledOnce == snapshot2)
+
+        // Roll back the first review.
+        let rolledTwice = fsrs.rollback(card: rolledOnce, log: r1.log)
+        #expect(rolledTwice == snapshot1)
+    }
+
+    // MARK: - Long-term mode
+
+    @Test("Rollback works in long-term mode for review-state cards")
+    func longTermReviewRollback() {
+        var params = Parameters()
+        params.enableShortTerm = false
+        let fsrs = FSRS(parameters: params)
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .good).card  // long-term: -> Review
+        #expect(card.state == .review)
+        let snapshot = card
+
+        let result = fsrs.schedule(card: card, now: card.due, rating: .again)
+        #expect(result.card.lapses == snapshot.lapses + 1)
+
+        let rolled = fsrs.rollback(card: result.card, log: result.log)
+        #expect(rolled == snapshot)
+    }
+}
+
 @Suite("Integration — Review Log")
 struct ReviewLogTests {
     @Test("Log captures pre-review state")

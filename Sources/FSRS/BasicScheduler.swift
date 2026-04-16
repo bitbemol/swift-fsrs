@@ -396,7 +396,10 @@ struct BasicScheduler: Sendable {
             difficulty: card.difficulty,
             elapsedDays: elapsedDays,
             scheduledDays: card.scheduledDays,
-            reviewedAt: now
+            reviewedAt: now,
+            previousDue: card.due,
+            previousLastReview: card.lastReview,
+            previousStep: card.step
         )
     }
 

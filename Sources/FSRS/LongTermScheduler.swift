@@ -97,7 +97,10 @@ struct LongTermScheduler: Sendable {
                 difficulty: card.difficulty,
                 elapsedDays: t,
                 scheduledDays: card.scheduledDays,
-                reviewedAt: now
+                reviewedAt: now,
+                previousDue: card.due,
+                previousLastReview: card.lastReview,
+                previousStep: card.step
             )
 
             return RecordLogItem(card: newCard, log: log)

@@ -121,4 +121,57 @@ public struct FSRS: Sendable {
         let t = card.elapsedDays(now: now)
         return algorithm.forgettingCurve(elapsedDays: Double(t), stability: card.stability)
     }
+
+    // MARK: - Rollback
+
+    /// Undoes a review, returning the card to the state it was in before the review.
+    ///
+    /// Use this to implement an "undo" button: when the user realizes they
+    /// hit the wrong rating, pass them the post-review card and the log
+    /// emitted by ``schedule(card:now:rating:)`` to recover the prior state.
+    ///
+    /// The rolled-back card restores `stability`, `difficulty`, `state`,
+    /// `step`, `scheduledDays`, and `lastReview` from the log, decrements
+    /// `reps` by one, and conditionally decrements `lapses` (see below).
+    /// The `due` is set to:
+    /// - the *original* due of the new card, when rolling back from `.new`
+    ///   (since the rolled-back card has no last-review timeline to "wait from"),
+    /// - the time the rollbacked review happened (`log.reviewedAt`) otherwise,
+    ///   so the card is immediately due again from the user's perspective.
+    ///
+    /// Matches `fsrs.ts:rollback` (ts-fsrs).
+    ///
+    /// > Important: `lapses` is only decremented when `log.state == .review`
+    /// > and the rating was `.again`. This mirrors ts-fsrs verbatim. In
+    /// > long-term mode (``Parameters/enableShortTerm`` = `false`),
+    /// > ``LongTermScheduler`` also increments lapses for Again on Learning
+    /// > or Relearning cards, but rollback will not undo those increments
+    /// > — this is a known divergence from "exactly correct" lapse accounting,
+    /// > deliberately preserved for ts-fsrs parity.
+    ///
+    /// - Parameters:
+    ///   - card: The card *after* the review you want to undo.
+    ///   - log: The review log produced by the scheduling call you want to undo.
+    /// - Returns: The card as it was before the review.
+    public func rollback(card: Card, log: ReviewLog) -> Card {
+        var rolled = card
+        rolled.state = log.state
+        rolled.stability = log.stability
+        rolled.difficulty = log.difficulty
+        rolled.scheduledDays = log.scheduledDays
+        rolled.step = log.previousStep
+        rolled.reps = max(0, card.reps - 1)
+
+        if log.state == .new {
+            rolled.due = log.previousDue
+            rolled.lastReview = nil
+            rolled.lapses = 0
+        } else {
+            rolled.due = log.reviewedAt
+            rolled.lastReview = log.previousLastReview
+            let didIncrementLapse = log.rating == .again && log.state == .review
+            rolled.lapses = max(0, card.lapses - (didIncrementLapse ? 1 : 0))
+        }
+        return rolled
+    }
 }
