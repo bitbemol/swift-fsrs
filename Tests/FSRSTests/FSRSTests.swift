@@ -835,6 +835,163 @@ struct RollbackTests {
     }
 }
 
+@Suite("FSRS — Forget")
+struct ForgetTests {
+
+    // MARK: - Card state after forget
+
+    @Test("Forget resets a Review-state card to .new with zeroed S/D")
+    func resetsReviewCard() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        #expect(card.state == .review)
+        #expect(card.stability > 0)
+        #expect(card.difficulty > 0)
+
+        let forgetTime = card.due
+        let result = fsrs.forget(card: card, now: forgetTime)
+
+        #expect(result.card.state == .new)
+        #expect(result.card.stability == 0)
+        #expect(result.card.difficulty == 0)
+        #expect(result.card.due == forgetTime)
+        #expect(result.card.scheduledDays == 0)
+        #expect(result.card.step == 0)
+    }
+
+    @Test("Forget preserves lastReview (matches ts-fsrs)")
+    func preservesLastReview() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .good).card
+        let lastReviewBefore = card.lastReview
+        #expect(lastReviewBefore != nil)
+
+        let result = fsrs.forget(card: card, now: dateAfter(days: 5))
+        #expect(result.card.lastReview == lastReviewBefore)
+    }
+
+    @Test("Forget preserves reps and lapses by default")
+    func preservesCountersByDefault() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        card = fsrs.schedule(card: card, now: card.due, rating: .again).card  // +1 lapse
+        let repsBefore = card.reps
+        let lapsesBefore = card.lapses
+        #expect(lapsesBefore > 0)
+
+        let result = fsrs.forget(card: card, now: dateAfter(days: 30))
+        #expect(result.card.reps == repsBefore)
+        #expect(result.card.lapses == lapsesBefore)
+    }
+
+    @Test("Forget with resetCount zeroes reps and lapses")
+    func resetCountZeroesCounters() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        card = fsrs.schedule(card: card, now: card.due, rating: .again).card
+        #expect(card.reps > 0)
+        #expect(card.lapses > 0)
+
+        let result = fsrs.forget(card: card, now: dateAfter(days: 30), resetCount: true)
+        #expect(result.card.reps == 0)
+        #expect(result.card.lapses == 0)
+    }
+
+    @Test("Forget on a new card is effectively a no-op for the card state")
+    func forgetOnNewCard() {
+        let fsrs = FSRS()
+        let original = FSRS.createCard(now: refDate)
+        let later = dateAfter(days: 1)
+
+        let result = fsrs.forget(card: original, now: later)
+        #expect(result.card.state == .new)
+        #expect(result.card.stability == 0)
+        #expect(result.card.difficulty == 0)
+        #expect(result.card.due == later)
+        #expect(result.card.lastReview == nil)
+    }
+
+    // MARK: - Forget log content
+
+    @Test("Forget log captures pre-forget state and snapshot fields")
+    func logCapturesPreState() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        let stabilityBefore = card.stability
+        let difficultyBefore = card.difficulty
+        let dueBefore = card.due
+        let lastReviewBefore = card.lastReview
+        let stepBefore = card.step
+
+        let forgetTime = dateAfter(days: 3)
+        let log = fsrs.forget(card: card, now: forgetTime).log
+
+        #expect(log.state == .review)
+        #expect(log.stability == stabilityBefore)
+        #expect(log.difficulty == difficultyBefore)
+        #expect(log.elapsedDays == 0)
+        #expect(log.reviewedAt == forgetTime)
+        #expect(log.previousDue == dueBefore)
+        #expect(log.previousLastReview == lastReviewBefore)
+        #expect(log.previousStep == stepBefore)
+    }
+
+    @Test("Forget log scheduledDays is days between now and due for non-new cards")
+    func logScheduledDaysFromDue() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+        // Forget 2 calendar days after the card became due.
+        let forgetTime = card.due.addingTimeInterval(2 * 86_400)
+
+        let log = fsrs.forget(card: card, now: forgetTime).log
+        #expect(log.scheduledDays == 2)
+    }
+
+    @Test("Forget log scheduledDays is 0 for new cards")
+    func logScheduledDaysZeroForNew() {
+        let fsrs = FSRS()
+        let card = FSRS.createCard(now: refDate)
+
+        let log = fsrs.forget(card: card, now: dateAfter(days: 5)).log
+        #expect(log.scheduledDays == 0)
+    }
+
+    @Test("Forget log uses .again as stand-in for ts-fsrs Rating.Manual")
+    func logRatingStandIn() {
+        let fsrs = FSRS()
+        let card = FSRS.createCard(now: refDate)
+
+        let log = fsrs.forget(card: card, now: refDate).log
+        #expect(log.rating == .again)
+    }
+
+    // MARK: - Post-forget scheduling
+
+    @Test("Forgotten card schedules like a new card on the next review")
+    func nextScheduleLooksNew() {
+        let fsrs = FSRS()
+        var card = FSRS.createCard(now: refDate)
+        card = fsrs.schedule(card: card, now: refDate, rating: .easy).card
+
+        let forgotten = fsrs.forget(card: card, now: dateAfter(days: 30)).card
+        // A second, parallel-history fresh card scheduled at the same time
+        // produces the same S/D as the forgotten card on its first review.
+        let fresh = FSRS.createCard(now: dateAfter(days: 30))
+        let nextOnForgotten = fsrs.schedule(card: forgotten, now: dateAfter(days: 30), rating: .good).card
+        let nextOnFresh = fsrs.schedule(card: fresh, now: dateAfter(days: 30), rating: .good).card
+
+        #expect(nextOnForgotten.stability == nextOnFresh.stability)
+        #expect(nextOnForgotten.difficulty == nextOnFresh.difficulty)
+        #expect(nextOnForgotten.state == nextOnFresh.state)
+    }
+}
+
 @Suite("Integration — Review Log")
 struct ReviewLogTests {
     @Test("Log captures pre-review state")

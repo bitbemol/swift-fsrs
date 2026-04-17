@@ -174,4 +174,82 @@ public struct FSRS: Sendable {
         }
         return rolled
     }
+
+    // MARK: - Forget
+
+    /// Resets a card to the `.new` state, optionally clearing review counters.
+    ///
+    /// Use this when the user marks a card as completely forgotten and wants
+    /// it back at the start of the learning pipeline. Stability and
+    /// difficulty are reset to zero, the step is cleared, and the card is
+    /// immediately due. `lastReview` is preserved (matching ts-fsrs) so the
+    /// card retains its history timestamp even though it's logically "new".
+    ///
+    /// `reps` and `lapses` are preserved by default. Pass `resetCount: true`
+    /// to zero them as well — useful when treating the card as truly new.
+    ///
+    /// Matches `fsrs.ts:forget` (ts-fsrs).
+    ///
+    /// > Important: ts-fsrs tags forget log entries with `Rating.Manual`,
+    /// > a fifth rating value not present in Swift's ``Rating`` enum. The
+    /// > returned ``ReviewLog`` uses ``Rating/again`` as a stand-in. As a
+    /// > consequence, the forget log is **not** safe input to
+    /// > ``rollback(card:log:)`` — passing it will produce an inconsistent
+    /// > card (e.g., spurious lapse decrements). Treat the log as an
+    /// > audit-trail entry, not a reversible review event.
+    ///
+    /// - Parameters:
+    ///   - card: The card to forget.
+    ///   - now: The time of the operation. Defaults to `Date()`.
+    ///   - resetCount: Whether to also reset `reps` and `lapses` to zero.
+    ///     Defaults to `false`.
+    /// - Returns: The forgotten card paired with an audit log entry.
+    public func forget(
+        card: Card,
+        now: Date = Date(),
+        resetCount: Bool = false
+    ) -> RecordLogItem {
+        // ts-fsrs forget computes scheduled_days = date_diff(now, card.due, 'days')
+        // for non-new cards, 0 otherwise. Mirror Card.elapsedDays's UTC-day
+        // floor (which matches dateDiffInDays in ts-fsrs help.ts) on (now, due)
+        // and clamp negatives to 0 — early forgets shouldn't yield negatives in
+        // an audit record.
+        let scheduledDaysAtForget: Int
+        if card.state == .new {
+            scheduledDaysAtForget = 0
+        } else {
+            let secondsPerDay: TimeInterval = 86_400
+            let dueDay = floor(card.due.timeIntervalSince1970 / secondsPerDay)
+            let nowDay = floor(now.timeIntervalSince1970 / secondsPerDay)
+            scheduledDaysAtForget = max(0, Int(nowDay - dueDay))
+        }
+
+        var forgotten = card
+        forgotten.due = now
+        forgotten.stability = 0
+        forgotten.difficulty = 0
+        forgotten.scheduledDays = 0
+        forgotten.step = 0
+        forgotten.state = .new
+        if resetCount {
+            forgotten.reps = 0
+            forgotten.lapses = 0
+        }
+        // forgotten.lastReview is intentionally preserved (matches ts-fsrs).
+
+        let log = ReviewLog(
+            rating: .again,  // Stand-in for ts-fsrs Rating.Manual; see doc note above.
+            state: card.state,
+            stability: card.stability,
+            difficulty: card.difficulty,
+            elapsedDays: 0,
+            scheduledDays: scheduledDaysAtForget,
+            reviewedAt: now,
+            previousDue: card.due,
+            previousLastReview: card.lastReview,
+            previousStep: card.step
+        )
+
+        return RecordLogItem(card: forgotten, log: log)
+    }
 }
