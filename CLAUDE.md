@@ -48,9 +48,13 @@ Sources/FSRS/
     +-- SchedulingResult.swift  # the four-rating preview bundle
 
 Tests/FSRSTests/
-|-- FSRSTests.swift             # the bulk: parity, schedulers, models, integration, rollback, forget
-|-- AleaTests.swift             # 5 reference vectors locking the PRNG byte-exact
-+-- FuzzParityTests.swift       # 3 determinism tests for the fuzz seed wiring
+|-- FSRSTests.swift                  # core: schedulers, models, integration, rollback, forget, sequence A canary
+|-- AleaTests.swift                  # 5 reference vectors locking the PRNG byte-exact
+|-- FuzzParityTests.swift            # 3 determinism tests for the fuzz seed wiring
+|-- AlgorithmParityTests.swift       # ts-fsrs parity: 24 tests, every algorithm function with reference vectors
+|-- SequenceParityTests.swift        # ts-fsrs parity: 50-review mixed-rating sequences, both modes
+|-- SchedulerParityTests.swift       # ts-fsrs parity: 36 tests covering every (state x rating) cell
++-- RollbackForgetParityTests.swift  # ts-fsrs parity: rollback/forget against rollback.test.ts/forget.test.ts
 ```
 
 ### Concurrency
@@ -158,16 +162,23 @@ ts-fsrs's `reschedule` replays a card's full review history under (potentially n
 
 ## Testing
 
-- `swift test` — currently 133 tests across 29 suites, all passing, all under 0.01 s.
-- The "ts-fsrs parity" suite is the regression net for numerical parity. It uses exact `==` against ts-fsrs reference values. Do not weaken it.
+- `swift test` — currently 216 tests across 57 suites, all passing.
+- Reference values are taken VERBATIM from ts-fsrs's own test suite at `/tmp/ts-fsrs-audit/packages/fsrs/__tests__/`. Those hardcoded numbers are computed and asserted by ts-fsrs maintainers — they're our ground truth. Don't invent your own reference values when ts-fsrs already has them.
+- The four `*ParityTests.swift` files form the production cross-check net:
+  - `AlgorithmParityTests` — every core algorithm function (`forgettingCurve`, `initialStability`, `initialDifficulty`, `nextDifficulty`, `nextRecallStability`, `nextForgetStability`, `nextShortTermStability`, `nextState`, `nextInterval`) with ≥ 8 vectors each, sourced from `algorithm.test.ts` and `FSRS-6.test.ts`.
+  - `SequenceParityTests` — 50-review mixed-rating sequences (basic + long-term mode), lapse/relearn cycles, easy-graduation cascades, plus verbatim ports of the `ivl_history` and `memory state` lifecycle scenarios from `FSRS-6.test.ts`.
+  - `SchedulerParityTests` — every (state × rating) cell for both schedulers, learning-step config edge cases, lapse paths with empty/non-empty `relearningSteps`, ordering invariants.
+  - `RollbackForgetParityTests` — verbatim ports of `rollback.test.ts` and `forget.test.ts`, asserting on resulting CARD state (log fields are intentionally not asserted — see "ReviewLog Semantics" above).
+- The `ts-fsrs parity` suite in `FSRSTests.swift` is the headline canary (Sequence A steps 1-3 + scheduler invariants).
 - `AleaTests` locks the PRNG byte-exact via 5 reference vectors. Do not weaken.
 - `FuzzParityTests` locks the seed-wiring determinism via 3 tests. Do not weaken.
 - Two Codable round-trip tests (in the "Card.scheduledDays" suite) lock the legacy-JSON migration for cards persisted before `scheduledDays` was a stored field.
+- **Every parity test uses exact `==`** except 4 assertions in `SequenceParityTests` that mirror ts-fsrs's own `toBeCloseTo(... 4)` tolerance — those are intentionally as-precise-as-the-reference, not weaker.
 - New tests use the `refDate` helper (a fixed `Date(timeIntervalSinceReferenceDate: 800_000_000)`) for determinism. Don't introduce `Date()` into tests.
 
 ### Verification gates after any change
 1. `swift build 2>&1 | tail -5` — zero errors, zero warnings.
-2. `swift test 2>&1 | tail -5` — count strictly grows, all pass.
+2. `swift test 2>&1 | tail -5` — count is ≥ 216 and strictly grows, all pass.
 3. Sequence A canary: `card.stability == 10.96433194` and `card.difficulty == 2.11121424` exactly at step 2 (auto-checked by the parity suite).
 4. If touching schedulers: confirm `hardDue == refDate + 360s` for a new-card Hard with default `learningSteps = [60, 600]` (auto-checked).
 5. If touching fuzz: re-run `AleaTests` and `FuzzParityTests` (auto-checked).
