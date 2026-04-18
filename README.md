@@ -169,10 +169,6 @@ Issues, bug reports, and PRs are welcome. Two ground rules before contributing:
 
 For internal architecture rules and the "do not touch" list, see [`CLAUDE.md`](CLAUDE.md).
 
-## License
-
-To be added — likely MIT or Apache-2.0 to match upstream ts-fsrs (MIT) and fsrs-rs (BSD-3-Clause). If you're considering using this package before a license is published, please open an issue.
-
 ## Acknowledgments
 
 - [Jarrett Ye](https://github.com/L-M-Sherlock) and the FSRS research community for designing the algorithm.
